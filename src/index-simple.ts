@@ -26,7 +26,8 @@ const corsOptions = {
     'http://192.168.0.188:3100',
     'http://192.168.0.188:3200',
     'http://192.168.0.188',
-    'http://192.168.0.188:3000'
+    'http://192.168.0.188:3000',
+    'https://ada-stock.vercel.app'
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
