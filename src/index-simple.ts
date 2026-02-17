@@ -32,10 +32,33 @@ const corsOptions = {
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
-  credentials: false
+  credentials: false,
+  optionsSuccessStatus: 200
 };
 
 app.use(cors(corsOptions));
+
+// Additional CORS headers for compatibility
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  const allowedOrigins = [
+    'http://localhost:3100',
+    'http://localhost:3200', 
+    'http://localhost:3000', 
+    'http://192.168.0.188:3100',
+    'http://192.168.0.188:3200',
+    'http://192.168.0.188',
+    'http://192.168.0.188:3000',
+    'https://ada-stock.vercel.app',
+    'https://ada-stock-tawny.vercel.app'
+  ];
+  
+  if (origin && allowedOrigins.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+  }
+  next();
+});
+
 app.use(express.json());
 app.use(morgan('dev'));
 
