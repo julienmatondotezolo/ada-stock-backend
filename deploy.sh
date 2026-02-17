@@ -17,8 +17,11 @@ BACKUP_DIR="/root/backups/adasstock"
 echo "📦 Creating deployment package..."
 
 # Create deployment directory
+rm -rf deploy-temp
 mkdir -p deploy-temp
-cp -r . deploy-temp/
+
+# Copy files excluding deploy-temp directory to prevent recursion
+rsync -av --exclude 'deploy-temp' --exclude 'node_modules' --exclude '.git' --exclude 'test-results' . deploy-temp/
 cd deploy-temp
 
 # Clean up development files
