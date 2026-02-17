@@ -9,6 +9,7 @@ set -e
 echo "🚀 Starting AdaStock Backend deployment..."
 
 VPS_HOST="root@46.224.93.79"
+VPS_PASSWORD="9rK2mX5vLqW8nJ4zB1dP"
 DOMAIN="adastock.mindgen.app"
 APP_NAME="adasstock-backend"
 APP_DIR="/root/app/adasstock"
@@ -36,15 +37,15 @@ cp .env.production .env
 echo "📤 Uploading to VPS..."
 
 # Create backup of current version
-ssh $VPS_HOST "mkdir -p $BACKUP_DIR && test -d $APP_DIR && cp -r $APP_DIR $BACKUP_DIR/backup-$(date +%Y%m%d-%H%M%S) || echo 'No existing version to backup'"
+sshpass -p "$VPS_PASSWORD" ssh $VPS_HOST "mkdir -p $BACKUP_DIR && test -d $APP_DIR && cp -r $APP_DIR $BACKUP_DIR/backup-$(date +%Y%m%d-%H%M%S) || echo 'No existing version to backup'"
 
 # Upload files
-ssh $VPS_HOST "mkdir -p $APP_DIR"
-rsync -avz --exclude 'node_modules' --exclude '.git' . $VPS_HOST:$APP_DIR/
+sshpass -p "$VPS_PASSWORD" ssh $VPS_HOST "mkdir -p $APP_DIR"
+sshpass -p "$VPS_PASSWORD" rsync -avz --exclude 'node_modules' --exclude '.git' . $VPS_HOST:$APP_DIR/
 
 echo "🔧 Installing dependencies and starting service..."
 
-ssh $VPS_HOST << EOF
+sshpass -p "$VPS_PASSWORD" ssh $VPS_HOST << EOF
 cd $APP_DIR
 
 # Install dependencies
@@ -66,7 +67,7 @@ fi
 
 # Test if service is running
 sleep 3
-curl -f http://localhost:3001/health && echo "✅ Service is running!" || echo "❌ Service failed to start"
+curl -f http://localhost:3055/health && echo "✅ Service is running!" || echo "❌ Service failed to start"
 
 EOF
 
