@@ -37,6 +37,8 @@ const corsOptions = {
   optionsSuccessStatus: 200
 };
 
+// Enable credentials for auth
+corsOptions.credentials = true;
 app.use(cors(corsOptions));
 
 // Additional CORS headers for compatibility
@@ -57,6 +59,7 @@ app.use((req, res, next) => {
   
   if (origin && allowedOrigins.includes(origin)) {
     res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Credentials', 'true');
   }
   next();
 });
@@ -76,6 +79,63 @@ try {
 } catch (error) {
   console.error('❌ Supabase initialization failed:', error);
 }
+
+// Auth middleware
+const requireAuth = async (req: any, res: any, next: any) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        success: false,
+        error: 'No authorization token provided',
+        code: 'AUTH_REQUIRED'
+      });
+    }
+
+    const token = authHeader.substring(7);
+    
+    // Verify JWT token with Supabase
+    const { data: { user }, error } = await supabaseClient.auth.getUser(token);
+    
+    if (error || !user) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid or expired token',
+        code: 'AUTH_INVALID',
+        details: error?.message
+      });
+    }
+
+    // Attach user to request
+    req.user = user;
+    next();
+  } catch (error) {
+    console.error('Auth middleware error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Authentication verification failed',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+};
+
+// Optional auth middleware (doesn't block if no token)
+const optionalAuth = async (req: any, res: any, next: any) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.substring(7);
+      const { data: { user } } = await supabaseClient.auth.getUser(token);
+      if (user) {
+        req.user = user;
+      }
+    }
+    next();
+  } catch (error) {
+    // Ignore auth errors for optional auth
+    next();
+  }
+};
 
 // Health check at both locations
 app.get('/health', async (req, res) => {
@@ -127,6 +187,293 @@ app.get(API_PREFIX + '/test-db', async (req, res) => {
       error: 'Database connection failed',
       message: error instanceof Error ? error.message : 'Unknown error',
       timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// =====================================================
+// AUTHENTICATION ENDPOINTS
+// =====================================================
+
+// Sign up
+app.post(API_PREFIX + '/auth/signup', async (req, res) => {
+  try {
+    const { email, password, first_name, last_name, role = 'manager' } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email and password are required',
+        code: 'MISSING_CREDENTIALS'
+      });
+    }
+
+    // Create user in Supabase Auth
+    const { data: authData, error: authError } = await supabaseClient.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true,
+      user_metadata: {
+        first_name,
+        last_name,
+        role
+      }
+    });
+
+    if (authError) {
+      return res.status(400).json({
+        success: false,
+        error: 'Failed to create account',
+        message: authError.message,
+        code: authError.status
+      });
+    }
+
+    // Create user profile in database
+    const { data: profileData, error: profileError } = await supabaseClient
+      .from('user_profiles')
+      .insert([{
+        id: authData.user.id,
+        email: authData.user.email,
+        first_name,
+        last_name,
+        role,
+        restaurant_id: 'losteria-deerlijk', // Default restaurant
+        is_active: true,
+        created_at: new Date().toISOString()
+      }])
+      .select()
+      .single();
+
+    if (profileError) {
+      console.error('Failed to create user profile:', profileError);
+      // User created in auth but profile failed - this is recoverable
+    }
+
+    res.status(201).json({
+      success: true,
+      message: 'Account created successfully',
+      user: {
+        id: authData.user.id,
+        email: authData.user.email,
+        first_name,
+        last_name,
+        role
+      }
+    });
+  } catch (error) {
+    console.error('Signup error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Account creation failed',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+// Sign in
+app.post(API_PREFIX + '/auth/signin', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email and password are required',
+        code: 'MISSING_CREDENTIALS'
+      });
+    }
+
+    const { data, error } = await supabaseClient.auth.signInWithPassword({
+      email,
+      password
+    });
+
+    if (error) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid credentials',
+        message: error.message,
+        code: 'AUTH_FAILED'
+      });
+    }
+
+    // Get user profile
+    let profile = null;
+    try {
+      const { data: profileData } = await supabaseClient
+        .from('user_profiles')
+        .select('*')
+        .eq('id', data.user.id)
+        .single();
+      profile = profileData;
+    } catch (profileError) {
+      console.error('Failed to fetch user profile:', profileError);
+    }
+
+    res.json({
+      success: true,
+      message: 'Sign in successful',
+      user: {
+        id: data.user.id,
+        email: data.user.email,
+        ...profile
+      },
+      session: {
+        access_token: data.session.access_token,
+        refresh_token: data.session.refresh_token,
+        expires_at: data.session.expires_at
+      }
+    });
+  } catch (error) {
+    console.error('Sign in error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Sign in failed',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+// Get current user
+app.get(API_PREFIX + '/auth/me', requireAuth, async (req, res) => {
+  try {
+    // Get user profile from database
+    const { data: profile, error } = await supabaseClient
+      .from('user_profiles')
+      .select('*')
+      .eq('id', req.user.id)
+      .single();
+
+    if (error && error.code !== 'PGRST116') { // Not found error
+      console.error('Failed to fetch user profile:', error);
+    }
+
+    res.json({
+      success: true,
+      user: {
+        id: req.user.id,
+        email: req.user.email,
+        ...profile
+      }
+    });
+  } catch (error) {
+    console.error('Get user error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch user data',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+// Update user profile
+app.put(API_PREFIX + '/auth/profile', requireAuth, async (req, res) => {
+  try {
+    const { first_name, last_name, role, is_active } = req.body;
+
+    const updateData: any = {};
+    if (first_name !== undefined) updateData.first_name = first_name;
+    if (last_name !== undefined) updateData.last_name = last_name;
+    if (role !== undefined) updateData.role = role;
+    if (is_active !== undefined) updateData.is_active = is_active;
+    updateData.updated_at = new Date().toISOString();
+
+    const { data, error } = await supabaseClient
+      .from('user_profiles')
+      .update(updateData)
+      .eq('id', req.user.id)
+      .select()
+      .single();
+
+    if (error) {
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to update profile',
+        message: error.message
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Profile updated successfully',
+      user: data
+    });
+  } catch (error) {
+    console.error('Profile update error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Profile update failed',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+// Refresh token
+app.post(API_PREFIX + '/auth/refresh', async (req, res) => {
+  try {
+    const { refresh_token } = req.body;
+
+    if (!refresh_token) {
+      return res.status(400).json({
+        success: false,
+        error: 'Refresh token is required',
+        code: 'MISSING_REFRESH_TOKEN'
+      });
+    }
+
+    const { data, error } = await supabaseClient.auth.refreshSession({
+      refresh_token
+    });
+
+    if (error) {
+      return res.status(401).json({
+        success: false,
+        error: 'Failed to refresh token',
+        message: error.message,
+        code: 'REFRESH_FAILED'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Token refreshed successfully',
+      session: {
+        access_token: data.session.access_token,
+        refresh_token: data.session.refresh_token,
+        expires_at: data.session.expires_at
+      }
+    });
+  } catch (error) {
+    console.error('Token refresh error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Token refresh failed',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+// Sign out
+app.post(API_PREFIX + '/auth/signout', requireAuth, async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.substring(7);
+    
+    if (token) {
+      await supabaseClient.auth.admin.signOut(token);
+    }
+
+    res.json({
+      success: true,
+      message: 'Signed out successfully'
+    });
+  } catch (error) {
+    console.error('Sign out error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Sign out failed',
+      message: error instanceof Error ? error.message : 'Unknown error'
     });
   }
 });
@@ -227,7 +574,7 @@ app.get(API_PREFIX + '/products', async (req, res) => {
 // =====================================================
 
 // Staff Management Endpoints
-app.get(API_PREFIX + '/staff', async (req, res) => {
+app.get(API_PREFIX + '/staff', requireAuth, async (req, res) => {
   try {
     const { active_only, position } = req.query;
     
@@ -266,7 +613,7 @@ app.get(API_PREFIX + '/staff', async (req, res) => {
 // STAFF CRUD ENDPOINTS (COMPLETE)
 // =====================================================
 
-app.post(API_PREFIX + '/staff', async (req, res) => {
+app.post(API_PREFIX + '/staff', requireAuth, async (req, res) => {
   try {
     const { first_name, last_name, name, email, phone, position, hourly_rate } = req.body;
     
@@ -307,7 +654,7 @@ app.post(API_PREFIX + '/staff', async (req, res) => {
   }
 });
 
-app.put(API_PREFIX + '/staff/:id', async (req, res) => {
+app.put(API_PREFIX + '/staff/:id', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { first_name, last_name, name, email, phone, position, hourly_rate, status, is_active } = req.body;
@@ -350,7 +697,7 @@ app.put(API_PREFIX + '/staff/:id', async (req, res) => {
   }
 });
 
-app.delete(API_PREFIX + '/staff/:id', async (req, res) => {
+app.delete(API_PREFIX + '/staff/:id', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
     
@@ -379,7 +726,7 @@ app.delete(API_PREFIX + '/staff/:id', async (req, res) => {
 // SCHEDULES ENDPOINTS (SAFE STUBS)
 // =====================================================
 
-app.get(API_PREFIX + '/schedules', async (req, res) => {
+app.get(API_PREFIX + '/schedules', requireAuth, async (req, res) => {
   try {
     const { year, month } = req.query;
     
@@ -414,7 +761,7 @@ app.get(API_PREFIX + '/schedules', async (req, res) => {
   }
 });
 
-app.post(API_PREFIX + '/schedules', async (req, res) => {
+app.post(API_PREFIX + '/schedules', requireAuth, async (req, res) => {
   try {
     const { name, year, month } = req.body;
     
@@ -494,7 +841,7 @@ app.put(API_PREFIX + '/schedules/:id/publish', async (req, res) => {
 // SHIFTS ENDPOINTS (SAFE STUBS)
 // =====================================================
 
-app.get(API_PREFIX + '/shifts', async (req, res) => {
+app.get(API_PREFIX + '/shifts', requireAuth, async (req, res) => {
   try {
     const { date, staff_id, week } = req.query;
     
@@ -550,7 +897,7 @@ app.get(API_PREFIX + '/shifts', async (req, res) => {
   }
 });
 
-app.post(API_PREFIX + '/shifts', async (req, res) => {
+app.post(API_PREFIX + '/shifts', requireAuth, async (req, res) => {
   try {
     const { scheduled_date, staff_member_id, start_time, end_time, position, break_duration, notes } = req.body;
     
@@ -854,19 +1201,26 @@ app.get('/', (req, res) => {
       'GET /health',
       `GET ${API_PREFIX}/health`,
       `GET ${API_PREFIX}/test-db`,
+      // Authentication (🔐 NEW)
+      `POST ${API_PREFIX}/auth/signup`,
+      `POST ${API_PREFIX}/auth/signin`,
+      `GET ${API_PREFIX}/auth/me`,
+      `PUT ${API_PREFIX}/auth/profile`,
+      `POST ${API_PREFIX}/auth/refresh`,
+      `POST ${API_PREFIX}/auth/signout`,
       // Stock Management
       `GET ${API_PREFIX}/categories`,
       `GET ${API_PREFIX}/products`,
-      // Staff Management (Full CRUD)
+      // Staff Management (🔐 Protected)
       `GET ${API_PREFIX}/staff`,
       `POST ${API_PREFIX}/staff`,
       `PUT ${API_PREFIX}/staff/:id`,
       `DELETE ${API_PREFIX}/staff/:id`,
-      // Schedule Management
+      // Schedule Management (🔐 Protected)
       `GET ${API_PREFIX}/schedules`,
       `POST ${API_PREFIX}/schedules`,
       `PUT ${API_PREFIX}/schedules/:id/publish`,
-      // Shift Management
+      // Shift Management (🔐 Protected)
       `GET ${API_PREFIX}/shifts`,
       `POST ${API_PREFIX}/shifts`,
       `PUT ${API_PREFIX}/shifts/:id`,
